@@ -4,5 +4,5 @@
 # found in the LICENSE file.
 
 set -e
-base=$(dirname "$0")
+base=$(dirname $(readlink -f "$0"))
 exec python "${base}/gyp_main.py" "$@"
