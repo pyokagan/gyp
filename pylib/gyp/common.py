@@ -347,6 +347,9 @@ def WriteOnDiff(filename):
       # Delegate everything else to self.tmp_file
       return getattr(self.tmp_file, attrname)
 
+    def __exit__(self, type, value, traceback):
+        self.close()
+
     def close(self):
       try:
         # Close tmp file.
