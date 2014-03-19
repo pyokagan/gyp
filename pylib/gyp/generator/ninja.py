@@ -2147,7 +2147,8 @@ def GenerateOutputForConfig(target_list, target_dicts, data, params,
 def PerformBuild(data, configurations, params):
   options = params['options']
   for config in configurations:
-    builddir = os.path.join(options.toplevel_dir, 'out', config)
+    builddir = os.path.join(options.toplevel_dir, ComputeOutputDir(params),
+                            config)
     arguments = ['ninja', '-C', builddir]
     print 'Building [%s]: %s' % (config, arguments)
     subprocess.check_call(arguments)
