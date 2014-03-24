@@ -13,6 +13,13 @@ import shlex
 import sys
 import traceback
 from gyp.common import GypError
+import subprocess
+import glob
+import platform
+import collections
+
+# Path to package directory
+_pkg_path = os.path.dirname(__file__)
 
 # Default debug modes for GYP
 debug = {}
@@ -161,6 +168,230 @@ def FormatOpt(opt, value):
   if opt.startswith('--'):
     return '%s=%s' % (opt, value)
   return opt + value
+
+class Triple(collections.namedtuple('Triple', ('arch', 'os', 'env'))):
+  def __str__(self):
+    return '{}-{}-{}'.format(*self)
+
+  @classmethod
+  def parse(cls, target):
+    x = target.split('-', 2)
+    return cls(*x)
+
+  def gnu(self):
+    """GNU normalization"""
+    arch, os, env = self
+    # Normalize i*86 -> x86
+    if re.match(r'^i\d86$', arch):
+      arch = 'x86'
+    if arch == 'x64':
+      arch = 'x86_64'
+    return self.__class__(arch, os, env)
+
+  def gyp(self):
+    """GYP normalization"""
+    arch, os, env = self
+    if re.match(r'^i\d86$', arch):
+      arch = 'x86'
+    if arch == 'x86_64':
+      arch = 'x64'
+    return self.__class__(arch, os, env)
+
+
+class Version(tuple):
+  def __new__(cls, *args):
+    return tuple.__new__(cls, tuple(args))
+
+  def __getnewargs__(self):
+    return tuple(self)
+
+  def __str__(self):
+    return ".".join([str(x) for x in self])
+
+
+def find_executables(names, paths=None):
+  """Given a list of executable names, find them and return their
+  absolute paths."""
+  if paths is None:
+    pathlist = os.getenv('PATH', '').split(os.pathsep)
+  else:
+    pathlist = paths
+  if sys.platform.startswith('win'):
+    pathlist.insert(0, os.curdir)
+    exts = os.getenv('PATHEXT', '').split(os.pathsep)
+  else:
+    exts = ['']
+  for name in names:
+    for prefix in pathlist:
+      for suffix in exts:
+        path = os.path.join(prefix, name) + suffix
+        if os.access(path, os.F_OK | os.X_OK):
+          yield path
+
+
+def find_cc(host=None, paths=None):
+  """Finds a list of possible C compilers.
+  If host is provided, we will also try to prefix the host target in front
+  of the compiler."""
+  if 'CC' in os.environ:
+    return iter((os.environ['CC'],))
+  x = ['gcc', 'gcc-4.8', 'gcc-4.7', 'gcc-4.6']
+  if host:
+    y = ['{}-{}'.format(host, z) for z in x]
+  else:
+    y = []
+  return find_executables(y + x, paths)
+
+
+def identify_cc(path):
+  """Given a C compiler, identify it.
+  Returns (type, version, target) where version is a version tuple
+  Returns one of ("gcc", "msvc", "unknown")
+  """
+  #To detect MSVC, run command with no arguments
+  p = subprocess.Popen((path,), stdout=subprocess.PIPE, stdin=subprocess.PIPE,
+      stderr=subprocess.PIPE)
+  o = p.stderr.read()
+  p.wait()
+  m = re.search((r'^Microsoft \(R\) C/C\+\+ Optimizing Compiler Version '
+    '([\d\.]+) for ([A-Za-z0-9\-_]+)'), o, re.MULTILINE)
+  if m:
+    version = Version(*[int(x) for x in m.group(1).split('.')])
+    arch = m.group(2)
+    os = "win"
+    env = "msvc"
+    return ("msvc", version, Triple(arch, os, env))
+  # Detect "Microsoft (R) C/C++ Optimizing Compiler Version X" in stderr
+  # If this fails, try running CC -v
+  p = subprocess.Popen((path, '-v'), stdout=subprocess.PIPE,
+      stdin=subprocess.PIPE, stderr=subprocess.PIPE)
+  _, o = p.communicate()
+  # Look for gcc version X in stdout
+  m = re.search(r'^gcc version ([\d\.]+)', o, re.MULTILINE)
+  m2 = re.search(r'^Target: ([A-Za-z0-9\-_]+)$', o, re.MULTILINE)
+  if m and m2:
+    version = Version(*[int(x) for x in m.group(1).split(".")])
+    return ('gcc', version, Triple.parse(m2.group(1)))
+  # Or else return unknown
+  return ('unknown', (), Triple('unknown', 'unknown', 'unknown'))
+
+
+def find_cxx(host=None, paths=None):
+  """Finds a list of possible C++ compilers.
+  If host is provided, we will also try to prefix the host target in front
+  of the compiler."""
+  if 'CXX' in os.environ:
+    return iter((os.environ['CXX'],))
+  x = ['g++', 'g++-4.8', 'g++-4.7', 'g++-4.6']
+  if host:
+    y = ['{}-{}'.format(host, z) for z in x]
+  else:
+    y = []
+  return find_executables(y + x, paths)
+
+
+def identify_cxx(path):
+  """Given a C++ compiler, identify it.
+  Returns (type, version, target) where version is a version tuple
+  `type` is one of ("gcc", "msvc", "unknown")
+  """
+  return identify_cc(path)
+
+
+def detect_build():
+  """Detect build system triple"""
+  arch = platform.machine()
+  if sys.platform.startswith('win'):
+    os = 'win'
+    env = "msvc"
+  elif sys.platform.startswith('linux'):
+    os = 'linux'
+    env = 'gnu' #TODO: Always GNU?
+  elif sys.platform.startswith('cygwin'):
+    os = 'win'
+    env = 'cygwin'
+  else:
+    os = 'unknown'
+    env = 'unknown'
+  return Triple(arch, os, env)
+
+
+def find_ar(host=None, paths=None):
+  """Finds a list of possible ar (Archive editor)
+  If host is provided, we will also try to prefix the host target
+  in front of the compiler."""
+  if 'AR' in os.environ:
+    return iter((os.environ['AR'],))
+  x = ['ar', 'gcc-ar-4.8', 'gcc-ar-4.7']
+  y = ['{}-{}'.format(host, z) for z in x] if host else []
+  return find_executables(y + x, paths)
+
+
+def find_link(host=None, paths=None):
+  if 'LINK' in os.environ:
+    return iter((os.environ['LINK'],))
+  x = ['g++', 'g++-4.8', 'g++-4.7', 'g++-4.6']
+  y = ['{}-{}'.format(host, z) for z in x] if host else []
+  return find_executables(y + x, paths)
+
+
+def find_make(host=None, paths=None):
+  "Finds a list of possible build systems"
+  #TODO: Mac support, xcode??
+  if sys.platform.startswith('win'):
+    #Only msbuild is supported on Windows. Makefiles will very
+    #easily break on Windows
+    return find_executables(['msbuild'], paths)
+  # Prefer ninja, then GNU Make
+  return find_executables(['ninja', 'gmake', 'make'], paths)
+
+
+def identify_make(path):
+  """Given a build system executable, identify it.
+  Returns (type, version), where `type` is one of 
+  {gmake, msbuild, ninja, unknown}, and `version` is a Version tuple.
+  """
+  # Run BUILD /version to identify msbuild
+  # Run BUILD --version  to identify gmake
+  p = subprocess.Popen((path, '--version'), stdout=subprocess.PIPE,
+      stdin=subprocess.PIPE, stderr=subprocess.PIPE)
+  stdout, _ = p.communicate()
+  m = re.match(r'GNU Make ([\d\.]+)', stdout)
+  if m:
+    version = Version(*[int(x) for x in m.group(1).split('.')])
+    return ('gmake', version)
+  # Else, run BUILD --help and look for usage: ninja to identify ninja
+  p = subprocess.Popen((path, '--help'), stdout=subprocess.PIPE,
+      stdin=subprocess.PIPE, stderr=subprocess.PIPE)
+  _, stderr = p.communicate()
+  m = re.match(r'usage: ninja', stderr)
+  if m:
+    version = Version(*[int(x) for x in stdout.strip().split('.')])
+    return ('ninja', version)
+  # Or else return unknown
+  return ('unknown', ())
+
+
+def find_pkg_config(host=None, paths=None):
+  """Finds a list of possible pkg-config.
+  If host is provided, we will also try to prefix the host target in front
+  of the compiler."""
+  if sys.platform.startswith('win'):
+    return []
+  x = ['pkg-config']
+  if host:
+    y = ['{}-{}'.format(host, z) for z in x]
+  else:
+    y = []
+  return find_executables(y + x, paths)
+
+
+def android_get_hosts(path, build):
+  """Get possible toolchains"""
+  paths = glob.glob('{}/toolchains/*/prebuilt/{}-{}/bin/*-gcc'.format(path, build[1], build[0]))
+  hosts = (Triple.parse(os.path.basename(x)[:-4]) for x in paths)
+  return set(hosts)
+
 
 def RegenerateAppendFlag(flag, values, predicate, env_name, options):
   """Regenerate a list of command line flags, for an option of action='append'.
@@ -334,6 +565,10 @@ def gyp_main(args):
   parser.add_option('-R', '--root-target', dest='root_targets',
                     action='append', metavar='TARGET',
                     help='include only TARGET and its deep dependencies')
+  parser.add_option('--host', dest='host', action='store',
+                    help='cross-compile to build programs to run on HOST')
+  parser.add_option('--android', dest='android', action='store_true',
+                    help='use android NDK')
 
   options, build_files_arg = parser.parse_args(args)
   build_files = build_files_arg
@@ -442,11 +677,60 @@ def gyp_main(args):
   if not options.toplevel_dir:
     options.toplevel_dir = options.depth
 
+  # Detect the current build system
+  build = detect_build()
+  build_gyp = build.gyp()
+  # Handle --host
+  if options.host:
+    host = options.host = Triple.parse(options.host)
+  else:
+    host = options.host = build
+  # GYP-normalize host
+  host_gyp = host.gyp()
+  # If --android, detect android ndk path
+  android_ndk = os.environ.get('ANDROID_NDK_ROOT')
+  if not android_ndk:
+    raise GypError('ANDROID_NDK_ROOT environment variable is not defined')
+  # Executable search path
+  if options.android:
+    paths = glob.glob(os.path.join(android_ndk, 'toolchains', '*', 'prebuilt',
+      '{}-{}'.format(build.os, build.arch), 'bin'))
+  else:
+    paths = os.environ.get('PATH', '').split(os.pathsep)
+  # Detect the required tools
+  cc_path = next(find_cc(host, paths), None)
+  cxx_path = next(find_cxx(host, paths), None)
+  ar_path = next(find_ar(host, paths), None)
+  link_path = next(find_link(host, paths), None)
+  if cc_path:
+    os.environ['CC'] = cc_path
+  if cxx_path:
+    os.environ['CXX'] = cxx_path
+  if ar_path:
+    os.environ['AR'] = ar_path
+  if link_path:
+    os.environ['LINK'] = link_path
   # -D on the command line sets variable defaults - D isn't just for define,
   # it's for default.  Perhaps there should be a way to force (-F?) a
   # variable's value so that it can't be overridden by anything else.
   cmdline_default_variables = {}
   defines = []
+  # Define some host-specific defines that are commonly used in gyp files
+  # in the wild. (e.g. v8, nodejs)
+  defines.append('OS={}'.format(host_gyp.os))
+  defines.append('target_arch={}'.format(host_gyp.arch))
+  defines.append('arm_version=7')
+  defines.append('host_arch={}'.format(build_gyp.arch))
+  if options.android:
+    defines.append('android_target_arch={}'.format(host_gyp.arch))
+  if host_gyp.arch == "arm":
+    # TODO: Detect these variables instead!
+    defines.append('armv7=1')
+    defines.append('arm_fpu=vfpv3')
+    defines.append('arm_neon=0')
+    defines.append('arm_thumb=0')
+    defines.append('arm_float_abi=default')
+
   if options.use_environment:
     defines += ShlexEnv('GYP_DEFINES')
   if options.defines:
@@ -458,6 +742,8 @@ def gyp_main(args):
 
   # Set up includes.
   includes = []
+  if options.android:
+    includes.append(os.path.join(_pkg_path, 'android.gypi'))
 
   # If ~/.gyp/include.gypi exists, it'll be forcibly included into every
   # .gyp file that's loaded, before anything else is included.
