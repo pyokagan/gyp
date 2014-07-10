@@ -17,6 +17,7 @@ import gyp.common
 import gyp.msvs_emulation
 import gyp.MSVSUtil as MSVSUtil
 import gyp.xcode_emulation
+import os
 from cStringIO import StringIO
 
 from gyp.common import GetEnvironFallback
@@ -341,7 +342,12 @@ class NinjaWriter:
     path_dir, path_basename = os.path.split(path)
     if qualified:
       path_basename = self.name + '.' + path_basename
-    return os.path.normpath(os.path.join(obj, self.base_dir, path_dir,
+    # If the path lies below the directory (e.g. starts with ../),
+    # we need to fix it to prevent the obj directory from escaping
+    base_dir = self.base_dir.split(os.sep)
+    i = next(i for i, x in enumerate(base_dir) if x != '..')
+    base_dir = ('..' * i) + os.sep.join(base_dir[i:])
+    return os.path.normpath(os.path.join(obj, base_dir, path_dir,
                                          path_basename))
 
   def WriteCollapsedDependencies(self, name, targets):
@@ -2102,7 +2108,10 @@ def GenerateOutputForConfig(target_list, target_dicts, data, params,
     obj = 'obj'
     if toolset != 'target':
       obj += '.' + toolset
-    output_file = os.path.join(obj, base_path, name + '.ninja')
+    my_base_path = base_path.split(os.sep)
+    i = next(i for i, x in enumerate(my_base_path) if x != '..')
+    my_base_path = ('..' * i) + os.sep.join(my_base_path[i:])
+    output_file = os.path.join(obj, my_base_path, name + '.ninja')
 
     ninja_output = StringIO()
     writer = NinjaWriter(qualified_target, target_outputs, base_path, build_dir,
