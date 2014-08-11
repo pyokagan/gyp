@@ -14,6 +14,7 @@ import subprocess
 import sys
 import gyp
 import gyp.common
+from gyp.common import OrderedSet
 import gyp.msvs_emulation
 import gyp.MSVSUtil as MSVSUtil
 import gyp.xcode_emulation
@@ -350,7 +351,7 @@ class NinjaWriter:
     return os.path.normpath(os.path.join(obj, base_dir, path_dir,
                                          path_basename))
 
-  def WriteCollapsedDependencies(self, name, targets):
+  def WriteCollapsedDependencies(self, name, targets, order_only=None):
     """Given a list of targets, return a path for a single file
     representing the result of building all the targets or None.
 
@@ -358,10 +359,11 @@ class NinjaWriter:
 
     assert targets == filter(None, targets), targets
     if len(targets) == 0:
+      assert not order_only
       return None
-    if len(targets) > 1:
+    if len(targets) > 1 or order_only:
       stamp = self.GypPathToUniqueOutput(name + '.stamp')
-      targets = self.ninja.build(stamp, 'stamp', targets)
+      targets = self.ninja.build(stamp, 'stamp', targets, order_only=order_only)
       self.ninja.newline()
     return targets[0]
 
@@ -398,6 +400,8 @@ class NinjaWriter:
       self.ninja.variable('arch', self.win_env[arch])
       self.ninja.variable('cc', '$cl_' + arch)
       self.ninja.variable('cxx', '$cl_' + arch)
+      self.ninja.variable('cc_host', '$cl_' + arch)
+      self.ninja.variable('cxx_host', '$cl_' + arch)
 
     if self.flavor == 'mac':
       self.archs = self.xcode_settings.GetActiveArchs(config_name)
@@ -601,8 +605,9 @@ class NinjaWriter:
       is_cygwin = (self.msvs_settings.IsRuleRunUnderCygwin(action)
                    if self.flavor == 'win' else False)
       args = action['action']
+      pool = 'console' if int(action.get('ninja_use_console', 0)) else None
       rule_name, _ = self.WriteNewNinjaRule(name, args, description,
-                                            is_cygwin, env=env)
+                                            is_cygwin, env, pool)
 
       inputs = [self.GypPathToNinja(i, env) for i in action['inputs']]
       if int(action.get('process_outputs_as_sources', False)):
@@ -640,8 +645,9 @@ class NinjaWriter:
           ('%s ' + generator_default_variables['RULE_INPUT_PATH']) % name)
       is_cygwin = (self.msvs_settings.IsRuleRunUnderCygwin(rule)
                    if self.flavor == 'win' else False)
+      pool = 'console' if int(rule.get('ninja_use_console', 0)) else None
       rule_name, args = self.WriteNewNinjaRule(
-          name, args, description, is_cygwin, env=env)
+          name, args, description, is_cygwin, env, pool)
 
       # TODO: if the command references the outputs directly, we should
       # simplify it to just use $out.
@@ -663,8 +669,20 @@ class NinjaWriter:
 
       inputs = [self.GypPathToNinja(i, env) for i in rule.get('inputs', [])]
 
+      # If there are n source files matching the rule, and m additional rule
+      # inputs, then adding 'inputs' to each build edge written below will
+      # write m * n inputs. Collapsing reduces this to m + n.
+      sources = rule.get('rule_sources', [])
+      num_inputs = len(inputs)
+      if prebuild:
+        num_inputs += 1
+      if num_inputs > 2 and len(sources) > 2:
+        inputs = [self.WriteCollapsedDependencies(
+          rule['rule_name'], inputs, order_only=prebuild)]
+        prebuild = []
+
       # For each source file, write an edge that generates all the outputs.
-      for source in rule.get('rule_sources', []):
+      for source in sources:
         source = os.path.normpath(source)
         dirname, basename = os.path.split(source)
         root, ext = os.path.splitext(basename)
@@ -711,8 +729,10 @@ class NinjaWriter:
             assert var == None, repr(var)
 
         outputs = [self.GypPathToNinja(o, env) for o in outputs]
-        extra_bindings.append(('unique_name',
-            hashlib.md5(outputs[0]).hexdigest()))
+        if self.flavor == 'win':
+          # WriteNewNinjaRule uses unique_name for creating an rsp file on win.
+          extra_bindings.append(('unique_name',
+              hashlib.md5(outputs[0]).hexdigest()))
         self.ninja.build(outputs, rule_name, self.GypPathToNinja(source),
                          implicit=inputs,
                          order_only=prebuild,
@@ -816,6 +836,7 @@ class NinjaWriter:
       cflags_objcc = ['$cflags_cc'] + \
                      self.xcode_settings.GetCflagsObjCC(config_name)
     elif self.flavor == 'win':
+      asmflags = self.msvs_settings.GetAsmflags(config_name)
       cflags = self.msvs_settings.GetCflags(config_name)
       cflags_c = self.msvs_settings.GetCflagsC(config_name)
       cflags_cc = self.msvs_settings.GetCflagsCC(config_name)
@@ -850,6 +871,8 @@ class NinjaWriter:
     self.WriteVariableList(ninja_file, 'defines',
                            [Define(d, self.flavor) for d in defines])
     if self.flavor == 'win':
+      self.WriteVariableList(ninja_file, 'asmflags',
+                             map(self.ExpandSpecial, asmflags))
       self.WriteVariableList(ninja_file, 'rcflags',
           [QuoteShellArgument(self.ExpandSpecial(f), self.flavor)
            for f in self.msvs_settings.GetRcflags(config_name,
@@ -1412,7 +1435,7 @@ class NinjaWriter:
       values = []
     ninja_file.variable(var, ' '.join(values))
 
-  def WriteNewNinjaRule(self, name, args, description, is_cygwin, env):
+  def WriteNewNinjaRule(self, name, args, description, is_cygwin, env, pool):
     """Write out a new ninja "rule" statement for a given command.
 
     Returns the name of the new rule, and a copy of |args| with variables
@@ -1470,7 +1493,7 @@ class NinjaWriter:
     # GYP rules/actions express being no-ops by not touching their outputs.
     # Avoid executing downstream dependencies in this case by specifying
     # restat=1 to ninja.
-    self.ninja.rule(rule_name, command, description, restat=True,
+    self.ninja.rule(rule_name, command, description, restat=True, pool=pool,
                     rspfile=rspfile, rspfile_content=rspfile_content)
     self.ninja.newline()
 
@@ -1570,6 +1593,10 @@ def CommandWithWrapper(cmd, wrappers, prog):
 
 def GetDefaultConcurrentLinks():
   """Returns a best-guess for a number of concurrent links."""
+  pool_size = int(os.getenv('GYP_LINK_CONCURRENCY', 0))
+  if pool_size:
+    return pool_size
+
   if sys.platform in ('win32', 'cygwin'):
     import ctypes
 
@@ -1699,14 +1726,15 @@ def GenerateOutputForConfig(target_list, target_dicts, data, params,
   #   'CC_host'/'CXX_host' enviroment variable, cc_host/cxx_host should be set
   #   to cc/cxx.
   if flavor == 'win':
-    # Overridden by local arch choice in the use_deps case.
-    # Chromium's ffmpeg c99conv.py currently looks for a 'cc =' line in
-    # build.ninja so needs something valid here. http://crbug.com/233985
-    cc = 'cl.exe'
-    cxx = 'cl.exe'
+    ar = 'lib.exe'
+    # cc and cxx must be set to the correct architecture by overriding with one
+    # of cl_x86 or cl_x64 below.
+    cc = 'UNSET'
+    cxx = 'UNSET'
     ld = 'link.exe'
     ld_host = '$ld'
   else:
+    ar = 'ar'
     cc = 'cc'
     cxx = 'c++'
     ld = '$cc'
@@ -1714,6 +1742,7 @@ def GenerateOutputForConfig(target_list, target_dicts, data, params,
     ld_host = '$cc_host'
     ldxx_host = '$cxx_host'
 
+  ar_host = 'ar'
   cc_host = None
   cxx_host = None
   cc_host_global_setting = None
@@ -1726,6 +1755,10 @@ def GenerateOutputForConfig(target_list, target_dicts, data, params,
                                                 options.toplevel_dir)
   wrappers = {}
   for key, value in make_global_settings:
+    if key == 'AR':
+      ar = os.path.join(build_to_root, value)
+    if key == 'AR.host':
+      ar_host = os.path.join(build_to_root, value)
     if key == 'CC':
       cc = os.path.join(build_to_root, value)
       if cc.endswith('clang-cl'):
@@ -1738,6 +1771,10 @@ def GenerateOutputForConfig(target_list, target_dicts, data, params,
     if key == 'CXX.host':
       cxx_host = os.path.join(build_to_root, value)
       cxx_host_global_setting = value
+    if key == 'LD':
+      ld = os.path.join(build_to_root, value)
+    if key == 'LD.host':
+      ld_host = os.path.join(build_to_root, value)
     if key.endswith('_wrapper'):
       wrappers[key[:-len('_wrapper')]] = os.path.join(build_to_root, value)
 
@@ -1749,8 +1786,15 @@ def GenerateOutputForConfig(target_list, target_dicts, data, params,
       wrappers[key_prefix] = os.path.join(build_to_root, value)
 
   if flavor == 'win':
+    configs = [target_dicts[qualified_target]['configurations'][config_name]
+               for qualified_target in target_list]
+    shared_system_includes = None
+    if not generator_flags.get('ninja_use_custom_environment_files', 0):
+      shared_system_includes = \
+          gyp.msvs_emulation.ExtractSharedMSVSSystemIncludes(
+              configs, generator_flags)
     cl_paths = gyp.msvs_emulation.GenerateEnvironmentFiles(
-        toplevel_build, generator_flags, OpenOutput)
+        toplevel_build, generator_flags, shared_system_includes, OpenOutput)
     for arch, path in cl_paths.iteritems():
       if clang_cl:
         # If we have selected clang-cl, use that instead.
@@ -1770,14 +1814,14 @@ def GenerateOutputForConfig(target_list, target_dicts, data, params,
   if flavor == 'win':
     master_ninja.variable('ld', ld)
     master_ninja.variable('idl', 'midl.exe')
-    master_ninja.variable('ar', 'lib.exe')
+    master_ninja.variable('ar', ar)
     master_ninja.variable('rc', 'rc.exe')
     master_ninja.variable('asm', 'ml.exe')
     master_ninja.variable('mt', 'mt.exe')
   else:
     master_ninja.variable('ld', CommandWithWrapper('LINK', wrappers, ld))
     master_ninja.variable('ldxx', CommandWithWrapper('LINK', wrappers, ldxx))
-    master_ninja.variable('ar', GetEnvironFallback(['AR_target', 'AR'], 'ar'))
+    master_ninja.variable('ar', GetEnvironFallback(['AR_target', 'AR'], ar))
 
   if generator_supports_multiple_toolsets:
     if not cc_host:
@@ -1785,7 +1829,7 @@ def GenerateOutputForConfig(target_list, target_dicts, data, params,
     if not cxx_host:
       cxx_host = cxx
 
-    master_ninja.variable('ar_host', GetEnvironFallback(['AR_host'], 'ar'))
+    master_ninja.variable('ar_host', GetEnvironFallback(['AR_host'], ar_host))
     cc_host = GetEnvironFallback(['CC_host'], cc_host)
     cxx_host = GetEnvironFallback(['CXX_host'], cxx_host)
 
@@ -1878,9 +1922,9 @@ def GenerateOutputForConfig(target_list, target_dicts, data, params,
                sys.executable))
     master_ninja.rule(
       'asm',
-      description='ASM $in',
+      description='ASM $out',
       command=('%s gyp-win-tool asm-wrapper '
-               '$arch $asm $defines $includes /c /Fo $out $in' %
+               '$arch $asm $defines $includes $asmflags /c /Fo $out $in' %
                sys.executable))
 
   if flavor != 'mac' and flavor != 'win':
@@ -1925,13 +1969,13 @@ def GenerateOutputForConfig(target_list, target_dicts, data, params,
       restat=True,
       command=mtime_preserving_solink_base % {'suffix': '@$link_file_list'},
       rspfile='$link_file_list',
-      rspfile_content='-Wl,--start-group $in $solibs -Wl,--end-group $libs',
+      rspfile_content='-Wl,--start-group $in -Wl,--end-group $solibs $libs',
       pool='link_pool')
     master_ninja.rule(
       'link',
       description='LINK $out',
       command=('$ld $ldflags -o $out '
-               '-Wl,--start-group $in $solibs -Wl,--end-group $libs'),
+               '-Wl,--start-group $in -Wl,--end-group $solibs $libs'),
       pool='link_pool')
   elif flavor == 'win':
     master_ninja.rule(

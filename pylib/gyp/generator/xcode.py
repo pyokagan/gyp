@@ -5,6 +5,7 @@
 import filecmp
 import gyp.common
 import gyp.xcodeproj_file
+import gyp.xcode_ninja
 import errno
 import os
 import sys
@@ -68,6 +69,7 @@ generator_additional_path_sections = [
 # The Xcode-specific keys that exist on targets and aren't moved down to
 # configurations.
 generator_additional_non_configuration_keys = [
+  'ios_app_extension',
   'mac_bundle',
   'mac_bundle_resources',
   'mac_framework_headers',
@@ -575,6 +577,12 @@ def PerformBuild(data, configurations, params):
 
 
 def GenerateOutput(target_list, target_dicts, data, params):
+  # Optionally configure each spec to use ninja as the external builder.
+  ninja_wrapper = params.get('flavor') == 'ninja'
+  if ninja_wrapper:
+    (target_list, target_dicts, data) = \
+        gyp.xcode_ninja.CreateWrapper(target_list, target_dicts, data, params)
+
   options = params['options']
   generator_flags = params.get('generator_flags', {})
   parallel_builds = generator_flags.get('xcode_parallel_builds', True)
@@ -637,14 +645,15 @@ def GenerateOutput(target_list, target_dicts, data, params):
     # com.googlecode.gyp.xcode.bundle, a pseudo-type that xcode.py interprets
     # to create a single-file mh_bundle.
     _types = {
-      'executable':             'com.apple.product-type.tool',
-      'loadable_module':        'com.googlecode.gyp.xcode.bundle',
-      'shared_library':         'com.apple.product-type.library.dynamic',
-      'static_library':         'com.apple.product-type.library.static',
-      'executable+bundle':      'com.apple.product-type.application',
-      'loadable_module+bundle': 'com.apple.product-type.bundle',
-      'loadable_module+xctest': 'com.apple.product-type.bundle.unit-test',
-      'shared_library+bundle':  'com.apple.product-type.framework',
+      'executable':                  'com.apple.product-type.tool',
+      'loadable_module':             'com.googlecode.gyp.xcode.bundle',
+      'shared_library':              'com.apple.product-type.library.dynamic',
+      'static_library':              'com.apple.product-type.library.static',
+      'executable+bundle':           'com.apple.product-type.application',
+      'loadable_module+bundle':      'com.apple.product-type.bundle',
+      'loadable_module+xctest':      'com.apple.product-type.bundle.unit-test',
+      'shared_library+bundle':       'com.apple.product-type.framework',
+      'executable+extension+bundle': 'com.apple.product-type.app-extension',
     }
 
     target_properties = {
@@ -655,6 +664,7 @@ def GenerateOutput(target_list, target_dicts, data, params):
     type = spec['type']
     is_xctest = int(spec.get('mac_xctest_bundle', 0))
     is_bundle = int(spec.get('mac_bundle', 0)) or is_xctest
+    is_extension = int(spec.get('ios_app_extension', 0))
     if type != 'none':
       type_bundle_key = type
       if is_xctest:
@@ -662,6 +672,10 @@ def GenerateOutput(target_list, target_dicts, data, params):
         assert type == 'loadable_module', (
             'mac_xctest_bundle targets must have type loadable_module '
             '(target %s)' % target_name)
+      elif is_extension:
+        assert is_bundle, ('ios_app_extension flag requires mac_bundle '
+            '(target %s)' % target_name)
+        type_bundle_key += '+extension+bundle'
       elif is_bundle:
         type_bundle_key += '+bundle'
 
@@ -703,7 +717,10 @@ def GenerateOutput(target_list, target_dicts, data, params):
     # and is made a dependency of this target.  This way the work is done
     # before the dependency checks for what should be recompiled.
     support_xct = None
-    if type != 'none' and (spec_actions or spec_rules):
+    # The Xcode "issues" don't affect xcode-ninja builds, since the dependency
+    # logic all happens in ninja.  Don't bother creating the extra targets in
+    # that case.
+    if type != 'none' and (spec_actions or spec_rules) and not ninja_wrapper:
       support_xccl = CreateXCConfigurationList(configuration_names);
       support_target_suffix = generator_flags.get(
           'support_target_suffix', ' Support')

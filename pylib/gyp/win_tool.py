@@ -248,10 +248,11 @@ class WinTool(object):
     # Processing C:\Program Files (x86)\Microsoft SDKs\...\include\objidl.idl
     # objidl.idl
     lines = out.splitlines()
-    prefix = 'Processing '
-    processing = set(os.path.basename(x) for x in lines if x.startswith(prefix))
+    prefixes = ('Processing ', '64 bit Processing ')
+    processing = set(os.path.basename(x)
+                     for x in lines if x.startswith(prefixes))
     for line in lines:
-      if not line.startswith(prefix) and line not in processing:
+      if not line.startswith(prefixes) and line not in processing:
         print line
     return popen.returncode
 
@@ -298,6 +299,17 @@ class WinTool(object):
     args = open(rspfile).read()
     dir = dir[0] if dir else None
     return subprocess.call(args, shell=True, env=env, cwd=dir)
+
+  def ExecClCompile(self, project_dir, selected_files):
+    """Executed by msvs-ninja projects when the 'ClCompile' target is used to
+    build selected C/C++ files."""
+    project_dir = os.path.relpath(project_dir, BASE_DIR)
+    selected_files = selected_files.split(';')
+    ninja_targets = [os.path.join(project_dir, filename) + '^^'
+        for filename in selected_files]
+    cmd = ['ninja.exe']
+    cmd.extend(ninja_targets)
+    return subprocess.call(cmd, shell=True, cwd=BASE_DIR)
 
 if __name__ == '__main__':
   sys.exit(main(sys.argv[1:]))
