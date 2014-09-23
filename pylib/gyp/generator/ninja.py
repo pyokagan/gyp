@@ -536,7 +536,7 @@ class NinjaWriter:
   def WriteWinIdlFiles(self, spec, prebuild):
     """Writes rules to match MSVS's implicit idl handling."""
     assert self.flavor == 'win'
-    if self.msvs_settings.HasExplicitIdlRules(spec):
+    if self.msvs_settings.HasExplicitIdlRulesOrActions(spec):
       return []
     outputs = []
     for source in filter(lambda x: x.endswith('.idl'), spec['sources']):
@@ -811,6 +811,8 @@ class NinjaWriter:
       self.ninja.variable('cxx', '$cxx_host')
       self.ninja.variable('ld', '$ld_host')
       self.ninja.variable('ldxx', '$ldxx_host')
+      self.ninja.variable('nm', '$nm_host')
+      self.ninja.variable('readelf', '$readelf_host')
 
     if self.flavor != 'mac' or len(self.archs) == 1:
       return self.WriteSourcesForArch(
@@ -1748,6 +1750,10 @@ def GenerateOutputForConfig(target_list, target_dicts, data, params,
   cc_host_global_setting = None
   cxx_host_global_setting = None
   clang_cl = None
+  nm = 'nm'
+  nm_host = 'nm'
+  readelf = 'readelf'
+  readelf_host = 'readelf'
 
   build_file, _, _ = gyp.common.ParseQualifiedTarget(target_list[0])
   make_global_settings = data[build_file].get('make_global_settings', [])
@@ -1775,6 +1781,14 @@ def GenerateOutputForConfig(target_list, target_dicts, data, params,
       ld = os.path.join(build_to_root, value)
     if key == 'LD.host':
       ld_host = os.path.join(build_to_root, value)
+    if key == 'NM':
+      nm = os.path.join(build_to_root, value)
+    if key == 'NM.host':
+      nm_host = os.path.join(build_to_root, value)
+    if key == 'READELF':
+      readelf = os.path.join(build_to_root, value)
+    if key == 'READELF.host':
+      readelf_host = os.path.join(build_to_root, value)
     if key.endswith('_wrapper'):
       wrappers[key[:-len('_wrapper')]] = os.path.join(build_to_root, value)
 
@@ -1822,6 +1836,13 @@ def GenerateOutputForConfig(target_list, target_dicts, data, params,
     master_ninja.variable('ld', CommandWithWrapper('LINK', wrappers, ld))
     master_ninja.variable('ldxx', CommandWithWrapper('LINK', wrappers, ldxx))
     master_ninja.variable('ar', GetEnvironFallback(['AR_target', 'AR'], ar))
+    if flavor != 'mac':
+      # Mac does not use readelf/nm for .TOC generation, so avoiding polluting
+      # the master ninja with extra unused variables.
+      master_ninja.variable(
+          'nm', GetEnvironFallback(['NM_target', 'NM'], nm))
+      master_ninja.variable(
+          'readelf', GetEnvironFallback(['READELF_target', 'READELF'], readelf))
 
   if generator_supports_multiple_toolsets:
     if not cc_host:
@@ -1830,6 +1851,9 @@ def GenerateOutputForConfig(target_list, target_dicts, data, params,
       cxx_host = cxx
 
     master_ninja.variable('ar_host', GetEnvironFallback(['AR_host'], ar_host))
+    master_ninja.variable('nm_host', GetEnvironFallback(['NM_host'], nm_host))
+    master_ninja.variable('readelf_host',
+                          GetEnvironFallback(['READELF_host'], readelf_host))
     cc_host = GetEnvironFallback(['CC_host'], cc_host)
     cxx_host = GetEnvironFallback(['CXX_host'], cxx_host)
 
@@ -1951,8 +1975,8 @@ def GenerateOutputForConfig(target_list, target_dicts, data, params,
         % { 'solink':
               '$ld -shared $ldflags -o $lib -Wl,-soname=$soname %(suffix)s',
             'extract_toc':
-              ('{ readelf -d $lib | grep SONAME ; '
-               'nm -gD -f p $lib | cut -f1-2 -d\' \'; }')})
+              ('{ $readelf -d $lib | grep SONAME ; '
+               '$nm -gD -f p $lib | cut -f1-2 -d\' \'; }')})
 
     master_ninja.rule(
       'solink',
@@ -2132,6 +2156,15 @@ def GenerateOutputForConfig(target_list, target_dicts, data, params,
   # objects.
   target_short_names = {}
 
+  # short name of targets that were skipped because they didn't contain anything
+  # interesting.
+  # NOTE: there may be overlap between this an non_empty_target_names.
+  empty_target_names = set()
+
+  # Set of non-empty short target names.
+  # NOTE: there may be overlap between this an empty_target_names.
+  non_empty_target_names = set()
+
   for qualified_target in target_list:
     # qualified_target is like: third_party/icu/icu.gyp:icui18n#target
     build_file, name, toolset = \
@@ -2178,6 +2211,9 @@ def GenerateOutputForConfig(target_list, target_dicts, data, params,
       target_outputs[qualified_target] = target
       if qualified_target in all_targets:
         all_outputs.add(target.FinalOutput())
+      non_empty_target_names.add(name)
+    else:
+      empty_target_names.add(name)
 
   if target_short_names:
     # Write a short name to build this target.  This benefits both the
@@ -2188,6 +2224,16 @@ def GenerateOutputForConfig(target_list, target_dicts, data, params,
     for short_name in target_short_names:
       master_ninja.build(short_name, 'phony', [x.FinalOutput() for x in
                                                target_short_names[short_name]])
+
+  # Write phony targets for any empty targets that weren't written yet. As
+  # short names are  not necessarily unique only do this for short names that
+  # haven't already been output for another target.
+  empty_target_names = empty_target_names - non_empty_target_names
+  if empty_target_names:
+    master_ninja.newline()
+    master_ninja.comment('Empty targets (output for completeness).')
+    for name in sorted(empty_target_names):
+      master_ninja.build(name, 'phony')
 
   if all_outputs:
     master_ninja.newline()
