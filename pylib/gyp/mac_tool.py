@@ -501,7 +501,7 @@ class MacTool(object):
       the key was not found.
     """
     if isinstance(data, str):
-      for key, value in substitutions.iteritems():
+      for key, value in substitutions.items():
         data = data.replace('$(%s)' % key, value)
       return data
     if isinstance(data, list):

@@ -271,7 +271,7 @@ def WriteMacros(out, eclipse_langs, defines):
   out.write('    <language name="holder for library settings"></language>\n')
   for lang in eclipse_langs:
     out.write('    <language name="%s">\n' % lang)
-    for key in sorted(defines.iterkeys()):
+    for key in sorted(defines.keys()):
       out.write('      <macro><name>%s</name><value>%s</value></macro>\n' %
                 (escape(key), escape(defines[key])))
     out.write('    </language>\n')

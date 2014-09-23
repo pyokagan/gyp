@@ -456,7 +456,7 @@ class AndroidMkWriter(object):
     Args:
       spec, configs: input from gyp.
     """
-    for configname, config in sorted(configs.iteritems()):
+    for configname, config in sorted(configs.items()):
       extracted_includes = []
 
       self.WriteLn('\n# Flags passed to both C and C++ files.')
@@ -780,7 +780,7 @@ class AndroidMkWriter(object):
     link_deps: link dependency list; see ComputeDeps()
     """
     if self.type != 'static_library':
-      for configname, config in sorted(configs.iteritems()):
+      for configname, config in sorted(configs.items()):
         ldflags = list(config.get('ldflags', []))
         self.WriteLn('')
         self.WriteList(ldflags, 'LOCAL_LDFLAGS_%s' % configname)
@@ -834,7 +834,7 @@ class AndroidMkWriter(object):
     settings = spec.get('aosp_build_settings', {})
     if settings:
       self.WriteLn('### Set directly by aosp_build_settings.')
-      for k, v in settings.iteritems():
+      for k, v in settings.items():
         if isinstance(v, list):
           self.WriteList(v, k)
         else:

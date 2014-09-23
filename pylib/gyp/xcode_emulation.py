@@ -7,6 +7,7 @@ This module contains classes that help to emulate xcodebuild behavior on top of
 other build systems, such as make and ninja.
 """
 
+from __future__ import print_function
 import copy
 import gyp.common
 import os
@@ -73,7 +74,8 @@ class XcodeArchsDefault(object):
             if arch not in expanded_archs:
               expanded_archs.append(arch)
         except KeyError as e:
-          print 'Warning: Ignoring unsupported variable "%s".' % variable
+          print('Warning: Ignoring unsupported variable "%s".' % variable,
+                file=sys.stderr)
       elif arch not in expanded_archs:
         expanded_archs.append(arch)
     return expanded_archs
@@ -168,7 +170,7 @@ class XcodeSettings(object):
     # the same for all configs are implicitly per-target settings.
     self.xcode_settings = {}
     configs = spec['configurations']
-    for configname, config in configs.iteritems():
+    for configname, config in configs.items():
       self.xcode_settings[configname] = config.get('xcode_settings', {})
       self._ConvertConditionalKeys(configname)
       if self.xcode_settings[configname].get('IPHONEOS_DEPLOYMENT_TARGET',
@@ -194,8 +196,8 @@ class XcodeSettings(object):
           new_key = key.split("[")[0]
           settings[new_key] = settings[key]
       else:
-        print 'Warning: Conditional keys not implemented, ignoring:', \
-              ' '.join(conditional_keys)
+        print('Warning: Conditional keys not implemented, ignoring:', \
+              ' '.join(conditional_keys), file=sys.stderr)
       del settings[key]
 
   def _Settings(self):
@@ -213,7 +215,8 @@ class XcodeSettings(object):
 
   def _WarnUnimplemented(self, test_key):
     if test_key in self._Settings():
-      print 'Warning: Ignoring not yet implemented key "%s".' % test_key
+      print('Warning: Ignoring not yet implemented key "%s".' % test_key,
+            file=sys.stderr)
 
   def _IsBundle(self):
     return int(self.spec.get('mac_bundle', 0)) != 0
@@ -847,7 +850,7 @@ class XcodeSettings(object):
         result = dict(self.xcode_settings[configname])
         first_pass = False
       else:
-        for key, value in self.xcode_settings[configname].iteritems():
+        for key, value in self.xcode_settings[configname].items():
           if key not in result:
             continue
           elif result[key] != value:
@@ -955,8 +958,8 @@ class XcodeSettings(object):
     unimpl = ['OTHER_CODE_SIGN_FLAGS']
     unimpl = set(unimpl) & set(self.xcode_settings[configname].keys())
     if unimpl:
-      print 'Warning: Some codesign keys not implemented, ignoring: %s' % (
-          ', '.join(sorted(unimpl)))
+      print('Warning: Some codesign keys not implemented, ignoring: %s' % (
+          ', '.join(sorted(unimpl))), file=sys.stderr)
 
     return ['%s code-sign-bundle "%s" "%s" "%s" "%s"' % (
         os.path.join('${TARGET_BUILD_DIR}', 'gyp-mac-tool'), key,
@@ -1213,13 +1216,13 @@ def XcodeVersion():
     # In that case this may be a CLT-only install so fall back to
     # checking that version.
     if len(version_list) < 2:
-      raise GypError, "xcodebuild returned unexpected results"
+      raise GypError("xcodebuild returned unexpected results")
   except:
     version = CLTVersion()
     if version:
       version = re.match('(\d\.\d\.?\d*)', version).groups()[0]
     else:
-      raise GypError, "No Xcode or CLT version detected!"
+      raise GypError("No Xcode or CLT version detected!")
     # The CLT has no build information, so we return an empty string.
     version_list = [version, '']
   version = version_list[0]
@@ -1525,7 +1528,8 @@ def _TopologicallySortedEnvVarKeys(env):
     order = gyp.common.TopologicallySorted(env.keys(), GetEdges)
     order.reverse()
     return order
-  except gyp.common.CycleError, e:
+  except gyp.common.CycleError:
+    e = sys.exc_info()[1]
     raise GypError(
         'Xcode environment variables are cyclically dependent: ' + str(e.nodes))
 
@@ -1562,10 +1566,10 @@ def _HasIOSTarget(targets):
 def _AddIOSDeviceConfigurations(targets):
   """Clone all targets and append -iphoneos to the name. Configure these targets
   to build for iOS devices and use correct architectures for those builds."""
-  for target_dict in targets.itervalues():
+  for target_dict in targets.values():
     toolset = target_dict['toolset']
     configs = target_dict['configurations']
-    for config_name, config_dict in dict(configs).iteritems():
+    for config_name, config_dict in dict(configs).items():
       iphoneos_config_dict = copy.deepcopy(config_dict)
       configs[config_name + '-iphoneos'] = iphoneos_config_dict
       configs[config_name + '-iphonesimulator'] = config_dict

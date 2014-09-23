@@ -157,7 +157,8 @@ def _RegistryQuery(key, value=None):
   text = None
   try:
     text = _RegistryQueryBase('Sysnative', key, value)
-  except OSError, e:
+  except OSError:
+    e = sys.exc_info()[1]
     if e.errno == errno.ENOENT:
       text = _RegistryQueryBase('System32', key, value)
     else:

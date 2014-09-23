@@ -2,6 +2,7 @@
 # Use of this source code is governed by a BSD-style license that can be
 # found in the LICENSE file.
 
+from __future__ import print_function
 import collections
 import copy
 import hashlib
@@ -19,7 +20,16 @@ import gyp.msvs_emulation
 import gyp.MSVSUtil as MSVSUtil
 import gyp.xcode_emulation
 import os
-from cStringIO import StringIO
+
+
+_PYTHON3 = sys.version_info >= (3, 0, 0)
+
+
+if _PYTHON3:
+  from io import StringIO
+else:
+  from cStringIO import StringIO
+
 
 from gyp.common import GetEnvironFallback
 import gyp.ninja_syntax as ninja_syntax
@@ -357,7 +367,7 @@ class NinjaWriter:
 
     Uses a stamp file if necessary."""
 
-    assert targets == filter(None, targets), targets
+    assert targets == list(filter(None, targets)), targets
     if len(targets) == 0:
       assert not order_only
       return None
@@ -428,8 +438,8 @@ class NinjaWriter:
           target = self.target_outputs[dep]
           actions_depends.append(target.PreActionInput(self.flavor))
           compile_depends.append(target.PreCompileInput())
-      actions_depends = filter(None, actions_depends)
-      compile_depends = filter(None, compile_depends)
+      actions_depends = list(filter(None, actions_depends))
+      compile_depends = list(filter(None, compile_depends))
       actions_depends = self.WriteCollapsedDependencies('actions_depends',
                                                         actions_depends)
       compile_depends = self.WriteCollapsedDependencies('compile_depends',
@@ -481,8 +491,9 @@ class NinjaWriter:
         if self.flavor != 'mac' or len(self.archs) == 1:
           link_deps += [self.GypPathToNinja(o) for o in obj_outputs]
         else:
-          print "Warning: Actions/rules writing object files don't work with " \
-                "multiarch targets, dropping. (target %s)" % spec['target_name']
+          print("Warning: Actions/rules writing object files don't work with "
+                "multiarch targets, dropping. (target %s)" % spec['target_name'],
+                file=sys.stderr)
     elif self.flavor == 'mac' and len(self.archs) > 1:
       link_deps = collections.defaultdict(list)
 
@@ -1793,7 +1804,7 @@ def GenerateOutputForConfig(target_list, target_dicts, data, params,
       wrappers[key[:-len('_wrapper')]] = os.path.join(build_to_root, value)
 
   # Support wrappers from environment variables too.
-  for key, value in os.environ.iteritems():
+  for key, value in os.environ.items():
     if key.lower().endswith('_wrapper'):
       key_prefix = key[:-len('_wrapper')]
       key_prefix = re.sub(r'\.HOST$', '.host', key_prefix)
@@ -1809,7 +1820,7 @@ def GenerateOutputForConfig(target_list, target_dicts, data, params,
               configs, generator_flags)
     cl_paths = gyp.msvs_emulation.GenerateEnvironmentFiles(
         toplevel_build, generator_flags, shared_system_includes, OpenOutput)
-    for arch, path in cl_paths.iteritems():
+    for arch, path in cl_paths.items():
       if clang_cl:
         # If we have selected clang-cl, use that instead.
         path = clang_cl
@@ -2249,7 +2260,7 @@ def PerformBuild(data, configurations, params):
     builddir = os.path.join(options.toplevel_dir, ComputeOutputDir(params),
                             config)
     arguments = ['ninja', '-C', builddir]
-    print 'Building [%s]: %s' % (config, arguments)
+    print('Building [%s]: %s' % (config, arguments))
     subprocess.check_call(arguments)
 
 
@@ -2286,10 +2297,12 @@ def GenerateOutput(target_list, target_dicts, data, params):
           arglists.append(
               (target_list, target_dicts, data, params, config_name))
         pool.map(CallGenerateOutputForConfig, arglists)
-      except KeyboardInterrupt, e:
+      except KeyboardInterrupt:
         pool.terminate()
-        raise e
+        raise
     else:
       for config_name in config_names:
         GenerateOutputForConfig(target_list, target_dicts, data, params,
                                 config_name)
+
+# vim: set expandtab tabstop=2 shiftwidth=2:

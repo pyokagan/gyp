@@ -542,7 +542,7 @@ def GenerateOutput(target_list, target_dicts, data, params):
       search_targets = _LookupTargets(config.targets, unqualified_mapping)
       matched_search_targets = _GetTargetsDependingOn(search_targets)
       # Reset the visited status for _GetBuildTargets.
-      for target in all_targets.itervalues():
+      for target in all_targets.values():
         target.visited = False
       build_targets = _GetBuildTargets(matching_targets, roots)
       matched_search_targets = [gyp.common.ParseQualifiedTarget(target.name)[1]

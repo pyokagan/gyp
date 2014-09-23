@@ -6,6 +6,16 @@
 structures or complex types except for dicts and lists. This is
 because gyp copies so large structure that small copy overhead ends up
 taking seconds in a project the size of Chromium."""
+import sys
+
+
+_PYTHON3 = sys.version_info >= (3, 0, 0)
+
+
+if _PYTHON3:
+  long = int
+  unicode = str
+
 
 class Error(Exception):
   pass
@@ -38,9 +48,12 @@ d[list] = _deepcopy_list
 
 def _deepcopy_dict(x):
   y = {}
-  for key, value in x.iteritems():
+  for key, value in x.items():
     y[deepcopy(key)] = deepcopy(value)
   return y
 d[dict] = _deepcopy_dict
 
 del d
+
+
+# vim: expandtab tabstop=2 shiftwidth=2:
