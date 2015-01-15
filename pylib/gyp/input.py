@@ -1144,6 +1144,15 @@ def LoadAutomaticVariablesFromDict(variables, the_dict):
   for key, value in the_dict.items():
     if type(value) in (str, int, list):
       variables['_' + key] = value
+  # PYK: If `toolset` is in `the_dict`, map all {toolset}_x variables to the
+  # value of `x`.
+  if 'toolset' in the_dict:
+    prefix = '%s_' % the_dict['toolset']
+    for key, value in variables.items():
+      if key.startswith(prefix) and isinstance(value, (str, int, list)):
+        variables[key[len(prefix):]] = value
+        if key == '%s_os' % the_dict['toolset']:
+          variables['OS'] = value
 
 
 def LoadVariablesFromVariablesDict(variables, the_dict, the_dict_key):
